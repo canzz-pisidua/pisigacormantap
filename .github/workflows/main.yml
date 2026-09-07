@@ -138,47 +138,58 @@ jobs:
 
           Write-Host "DirectX 9 legacy components installed successfully."
 
-      # ==========================================
+            # ==========================================
       # 5. CREATE RDP USER
       # ==========================================
       - name: Create RDP User
         shell: powershell
         run: |
-          $username = "Gamer"
-          $password = "Gaming@12345"
+          $ErrorActionPreference = "Stop"
+
+          $username = "Pc123@_"
+          $password = "apasI123@_"
 
           Write-Host "Creating RDP user..."
 
+          # Hapus user jika sebelumnya sudah ada
           $existing = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
 
           if ($existing) {
             Remove-LocalUser -Name $username
           }
 
+          # Buat password
           $securePassword = ConvertTo-SecureString `
             $password `
             -AsPlainText `
             -Force
 
+          # Buat user
           New-LocalUser `
             -Name $username `
             -Password $securePassword `
-            -FullName "Gaming RDP User" `
-            -Description "Gaming RDP Account" `
-            -PasswordNeverExpires
+            -FullName "Gaming User" `
+            -Description "Gaming RDP User"
 
+          # Password tidak kedaluwarsa
+          Set-LocalUser `
+            -Name $username `
+            -PasswordNeverExpires $true
+
+          # Administrator
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member $username
 
+          # Remote Desktop
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member $username
 
-          Write-Host "RDP user created."
+          Write-Host "======================================"
+          Write-Host "RDP USER CREATED"
+          Write-Host "======================================"
           Write-Host "Username: $username"
-          Write-Host "Password: $password"
-
       # ==========================================
       # 6. INSTALL TAILSCALE
       # ==========================================
