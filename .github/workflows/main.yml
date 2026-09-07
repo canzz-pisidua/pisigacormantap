@@ -1,148 +1,316 @@
-name: RDP
+name: Gaming RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  gaming-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+
+      # ==============================
+      # RDP
+      # ==============================
+      - name: Configure RDP
         shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          $rdp = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+          $tcp = "$rdp\WinStations\RDP-Tcp"
+
+          Set-ItemProperty -Path $rdp `
             -Name "fDenyTSConnections" -Value 0 -Force
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+          Set-ItemProperty -Path $tcp `
             -Name "UserAuthentication" -Value 0 -Force
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+          Set-ItemProperty -Path $tcp `
             -Name "SecurityLayer" -Value 0 -Force
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+          netsh advfirewall firewall add rule `
+            name="Gaming-RDP-TCP" `
             dir=in action=allow protocol=TCP localport=3389
 
-          Restart-Service -Name TermService -Force
+          netsh advfirewall firewall add rule `
+            name="Gaming-RDP-UDP" `
+            dir=in action=allow protocol=UDP localport=3389
 
-      - name: Create RDP User with Secure Password
+      # ==============================
+      # RDP GRAPHICS OPTIMIZATION
+      # ==============================
+      - name: Optimize RDP Graphics
         shell: powershell
         run: |
-          Add-Type -AssemblyName System.Security
+          $policy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
 
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126))
+          New-Item -Path $policy -Force | Out-Null
+
+          Set-ItemProperty -Path $policy `
+            -Name "UseHardwareGraphicsAdapters" `
+            -Type DWord -Value 1
+
+          Set-ItemProperty -Path $policy `
+            -Name "AVC444ModePreferred" `
+            -Type DWord -Value 1
+
+          Set-ItemProperty -Path $policy `
+            -Name "AVCHardwareEncodePreferred" `
+            -Type DWord -Value 1
+
+          Set-ItemProperty -Path $policy `
+            -Name "SelectTransport" `
+            -Type DWord -Value 1
+
+          powercfg /setactive SCHEME_MIN
+
+          $visual = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
+
+          New-Item -Path $visual -Force | Out-Null
+
+          Set-ItemProperty -Path $visual `
+            -Name "VisualFXSetting" `
+            -Type DWord -Value 2
+
+          $theme = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+          New-Item -Path $theme -Force | Out-Null
+
+          Set-ItemProperty -Path $theme `
+            -Name "EnableTransparency" `
+            -Type DWord -Value 0
+
+      # ==============================
+      # DIRECTX 9 LEGACY
+      # ==============================
+      - name: Install DirectX 9 Legacy Components
+        shell: powershell
+        run: |
+          $url = "https://download.microsoft.com/download/1/1/C/11C9F0A8-1F16-4F6C-9E90-7C5F5A4D8E0D/directx_Jun2010_redist.exe"
+
+          $installer = "$env:TEMP\directx_Jun2010_redist.exe"
+          $extract = "$env:TEMP\DirectX9"
+
+          Write-Host "Downloading Microsoft DirectX June 2010..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
+
+          if (-not (Test-Path $installer)) {
+            Write-Error "DirectX installer gagal didownload."
+            exit 1
           }
 
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
+          Write-Host "Extracting DirectX..."
 
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          New-Item -ItemType Directory `
+            -Path $extract `
+            -Force | Out-Null
 
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          Start-Process $installer `
+            -ArgumentList "/Q /T:`"$extract`"" `
+            -Wait
 
-          New-LocalUser -Name "RDP" `
-            -Password $securePass `
+          $setup = Join-Path $extract "DXSETUP.exe"
+
+          if (-not (Test-Path $setup)) {
+            Write-Error "DXSETUP.exe tidak ditemukan."
+            exit 1
+          }
+
+          Write-Host "Installing DirectX 9 legacy components..."
+
+          $process = Start-Process $setup `
+            -ArgumentList "/silent" `
+            -Wait `
+            -PassThru
+
+          Write-Host "DirectX installer selesai."
+          Write-Host "Exit Code: $($process.ExitCode)"
+
+          Remove-Item $installer `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Remove-Item $extract `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "DirectX 9 legacy components berhasil diproses."
+
+      # ==============================
+      # RDP USER
+      # ==============================
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $upper = [char[]](65..90)
+          $lower = [char[]](97..122)
+          $number = [char[]](48..57)
+          $special = [char[]](33..47)
+
+          $chars = @()
+
+          $chars += $upper | Get-Random -Count 4
+          $chars += $lower | Get-Random -Count 4
+          $chars += $number | Get-Random -Count 4
+          $chars += $special | Get-Random -Count 4
+
+          $password = -join ($chars | Sort-Object { Get-Random })
+
+          $secure = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name "RDP"
+          }
+
+          New-LocalUser `
+            -Name "RDP" `
+            -Password $secure `
             -AccountNeverExpires
 
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member "RDP"
 
-          "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "RDP"
 
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
+      # ==============================
+      # TAILSCALE
+      # ==============================
       - name: Install Tailscale
         shell: powershell
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = Join-Path $env:TEMP "tailscale.msi"
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+
+          $installer = "$env:TEMP\tailscale.msi"
 
           Write-Host "Downloading Tailscale..."
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
 
-          Write-Host "Installing Tailscale..."
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
+
           Start-Process msiexec.exe `
-            -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
+            -ArgumentList "/i `"$installer`" /quiet /norestart" `
             -Wait
 
-          Remove-Item $installerPath -Force
+          Remove-Item $installer -Force
 
-      - name: Establish Tailscale Connection
+          Write-Host "Tailscale installed."
+
+      # ==============================
+      # CONNECT TAILSCALE
+      # ==============================
+      - name: Connect Tailscale
         shell: powershell
         run: |
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
-              Write-Error "Tailscale executable not found."
-              exit 1
+            Write-Error "Tailscale tidak ditemukan."
+            exit 1
           }
 
           & $tailscale up `
             --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" `
-            --hostname="gh-runner-$env:GITHUB_RUN_ID"
+            --hostname="gaming-rdp-$env:GITHUB_RUN_ID"
 
-          $tsIP = $null
-          $retries = 0
+          $ip = $null
 
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = (& $tailscale ip -4).Trim()
+          for ($i = 0; $i -lt 20; $i++) {
 
-              if (-not $tsIP) {
-                  Start-Sleep -Seconds 5
-              }
+            $ip = (& $tailscale ip -4).Trim()
 
-              $retries++
+            if ($ip) {
+              break
+            }
+
+            Start-Sleep -Seconds 3
           }
 
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
+          if (-not $ip) {
+            Write-Error "Tailscale IP tidak tersedia."
+            exit 1
           }
 
-          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Verify RDP Accessibility
+      # ==============================
+      # VERIFY RDP
+      # ==============================
+      - name: Verify RDP
         shell: powershell
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "Testing RDP..."
 
-          $testResult = Test-NetConnection `
+          $test = Test-NetConnection `
             -ComputerName $env:TAILSCALE_IP `
             -Port 3389
 
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
+          if (-not $test.TcpTestSucceeded) {
+            Write-Error "Port RDP 3389 tidak bisa diakses."
+            exit 1
           }
 
-          Write-Host "TCP connectivity successful!"
+          Write-Host "RDP berhasil diakses."
 
-      - name: Maintain Connection
+      # ==============================
+      # SHOW INFORMATION
+      # ==============================
+      - name: Show RDP Information
         shell: powershell
         run: |
           Write-Host ""
-          Write-Host "=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "========================================"
+          Write-Host "          GAMING RDP 64-BIT"
+          Write-Host "========================================"
+          Write-Host "Address : $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
-          Write-Host "Password: $($env:RDP_CREDS -replace '^User: RDP \| Password: ', '')"
-          Write-Host "=================="
-          Write-Host ""
+          Write-Host "Password: $env:RDP_PASSWORD"
+          Write-Host "========================================"
 
+          Write-Host ""
+          Write-Host "SYSTEM:"
+
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, OSArchitecture
+
+          Write-Host ""
+          Write-Host "CPU:"
+
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfLogicalProcessors
+
+          Write-Host ""
+          Write-Host "RAM:"
+
+          $ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+
+          Write-Host "$([math]::Round($ram / 1GB, 2)) GB"
+
+          Write-Host ""
+          Write-Host "GPU:"
+
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, AdapterRAM, DriverVersion
+
+      # ==============================
+      # KEEP RDP ALIVE
+      # ==============================
+      - name: Keep RDP Alive
+        shell: powershell
+        run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active"
-              Start-Sleep -Seconds 300
+            Write-Host "[$(Get-Date)] Gaming RDP Active"
+            Start-Sleep -Seconds 300
           }
