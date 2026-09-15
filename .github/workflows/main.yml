@@ -1,324 +1,100 @@
-name: Gaming RDP
-
+name: RDP
 on:
   workflow_dispatch:
-
 jobs:
-  gaming-rdp:
+  secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
-
     steps:
-
-      # ==========================================
-      # 1. SETUP JOB
-      # ==========================================
-      - name: Set up job
-        shell: powershell
+      - name: Configure Core RDP Settings
         run: |
-          Write-Host "======================================"
-          Write-Host "       GAMING RDP - 64 BIT"
-          Write-Host "======================================"
-          Write-Host "Windows architecture:"
-          Get-CimInstance Win32_OperatingSystem |
-            Select-Object OSArchitecture
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "SecurityLayer" -Value 0 -Force
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
 
-      # ==========================================
-      # 2. CONFIGURE RDP
-      # ==========================================
-      - name: Configure RDP
-        shell: powershell
+      - name: Create RDP User with Secure Password
         run: |
-          Write-Host "Enabling Remote Desktop..."
-
-          Set-ItemProperty `
-            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" `
-            -Value 0
-
-          Set-ItemProperty `
-            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-            -Name "UserAuthentication" `
-            -Value 0
-
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-          Set-Service -Name TermService -StartupType Automatic
-          Start-Service TermService
-
-          Write-Host "RDP configured."
-
-      # ==========================================
-      # 3. OPTIMIZE RDP GRAPHICS
-      # ==========================================
-      - name: Optimize RDP Graphics
-        shell: powershell
-        run: |
-          Write-Host "Optimizing RDP graphics..."
-
-          # Enable AVC/H.264 graphics where supported
-          New-ItemProperty `
-            -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" `
-            -Name "AVC444ModePreferred" `
-            -PropertyType DWORD `
-            -Value 1 `
-            -Force
-
-          New-ItemProperty `
-            -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" `
-            -Name "AVCHardwareEncodePreferred" `
-            -PropertyType DWORD `
-            -Value 1 `
-            -Force
-
-          # Prefer high quality graphics
-          New-ItemProperty `
-            -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" `
-            -Name "MaxCompressionRatio" `
-            -PropertyType DWORD `
-            -Value 2 `
-            -Force
-
-          Write-Host "RDP graphics optimization completed."
-
-      # ==========================================
-      # 4. INSTALL DIRECTX 9 LEGACY COMPONENTS
-      # ==========================================
-      - name: Install DirectX 9 Legacy Components
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $url = "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe"
-          $installer = "$env:TEMP\directx_Jun2010_redist.exe"
-          $extract = "$env:TEMP\DirectX_Jun2010"
-
-          Write-Host "Downloading Microsoft DirectX June 2010..."
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer `
-            -UseBasicParsing
-
-          if (!(Test-Path $installer)) {
-            throw "DirectX installer failed to download."
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+            Upper   = [char[]](65..90)
+            Lower   = [char[]](97..122)
+            Number  = [char[]](48..57)
+            Special = ([char[]](33..47) + [char[]](58..64) +
+                       [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper   | Get-Random -Count 4
+          $rawPassword += $charSet.Lower   | Get-Random -Count 4
+          $rawPassword += $charSet.Number  | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          if (-not (Get-LocalUser -Name "RDP")) {
+            Write-Error "User creation failed"
+            exit 1
           }
 
-          Write-Host "Download completed."
-
-          # Create extraction directory
-          if (Test-Path $extract) {
-            Remove-Item $extract -Recurse -Force
-          }
-
-          New-Item `
-            -ItemType Directory `
-            -Path $extract `
-            -Force | Out-Null
-
-          Write-Host "Extracting DirectX files..."
-
-          Start-Process `
-            -FilePath $installer `
-            -ArgumentList "/Q /T:$extract" `
-            -Wait
-
-          $dxsetup = Join-Path $extract "DXSETUP.exe"
-
-          if (!(Test-Path $dxsetup)) {
-            throw "DXSETUP.exe was not found after extraction."
-          }
-
-          Write-Host "Installing DirectX legacy components..."
-
-          Start-Process `
-            -FilePath $dxsetup `
-            -ArgumentList "/silent" `
-            -Wait
-
-          Write-Host "DirectX 9 legacy components installed successfully."
-
-            # ==========================================
-      # 5. CREATE RDP USER
-      # ==========================================
-      - name: Create RDP User
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $username = "Pc123@_"
-          $password = "apasI123@_"
-
-          Write-Host "Creating RDP user..."
-
-          # Hapus user jika sebelumnya sudah ada
-          $existing = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
-
-          if ($existing) {
-            Remove-LocalUser -Name $username
-          }
-
-          # Buat password
-          $securePassword = ConvertTo-SecureString `
-            $password `
-            -AsPlainText `
-            -Force
-
-          # Buat user
-          New-LocalUser `
-            -Name $username `
-            -Password $securePassword `
-            -FullName "Gaming User" `
-            -Description "Gaming RDP User"
-
-          # Password tidak kedaluwarsa
-          Set-LocalUser `
-            -Name $username `
-            -PasswordNeverExpires $true
-
-          # Administrator
-          Add-LocalGroupMember `
-            -Group "Administrators" `
-            -Member $username
-
-          # Remote Desktop
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member $username
-
-          Write-Host "======================================"
-          Write-Host "RDP USER CREATED"
-          Write-Host "======================================"
-          Write-Host "Username: $username"
-      # ==========================================
-      # 6. INSTALL TAILSCALE
-      # ==========================================
       - name: Install Tailscale
-        shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
 
-          Write-Host "Installing Tailscale..."
-
-          $tailscaleUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $tailscaleInstaller = "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest `
-            -Uri $tailscaleUrl `
-            -OutFile $tailscaleInstaller `
-            -UseBasicParsing
-
-          Start-Process `
-            -FilePath "msiexec.exe" `
-            -ArgumentList "/i `"$tailscaleInstaller`" /qn /norestart" `
-            -Wait
-
-          Write-Host "Tailscale installed."
-
-      # ==========================================
-      # 7. CONNECT TAILSCALE
-      # ==========================================
-      - name: Connect Tailscale
-        shell: powershell
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+      - name: Establish Tailscale Connection
         run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "Connecting to Tailscale..."
-
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTHKEY)) {
-            throw "TAILSCALE_AUTHKEY secret is not configured."
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Start-Sleep -Seconds 5
+            $retries++
           }
-
-          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-
-          if (!(Test-Path $tailscale)) {
-            throw "Tailscale executable was not found."
+          if (-not $tsIP) {
+            Write-Error "Tailscale IP not assigned. Exiting."
+            exit 1
           }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-          & $tailscale up `
-            --auth-key="$env:TAILSCALE_AUTHKEY" `
-            --hostname="gaming-rdp"
-
-          Write-Host "Tailscale connected."
-
-      # ==========================================
-      # 8. VERIFY RDP
-      # ==========================================
-      - name: Verify RDP
-        shell: powershell
+      - name: Verify RDP Accessibility
         run: |
-          Write-Host "Checking RDP service..."
-
-          Get-Service TermService
-
-          Write-Host ""
-          Write-Host "Checking RDP port..."
-
-          $rdpPort = Get-NetTCPConnection `
-            -LocalPort 3389 `
-            -State Listen `
-            -ErrorAction SilentlyContinue
-
-          if ($rdpPort) {
-            Write-Host "RDP port 3389 is LISTENING."
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+            Write-Error "TCP connection to RDP port 3389 failed"
+            exit 1
           }
-          else {
-            Write-Warning "RDP port 3389 is not currently listening."
-          }
+          Write-Host "TCP connectivity successful!"
 
-          Write-Host ""
-          Write-Host "Checking Tailscale..."
-
-          & "C:\Program Files\Tailscale\tailscale.exe" status
-
-      # ==========================================
-      # 9. SHOW RDP INFORMATION
-      # ==========================================
-      - name: Show RDP Information
-        shell: powershell
+      - name: Maintain Connection
         run: |
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "          GAMING RDP READY"
-          Write-Host "======================================"
-
-          Write-Host ""
-          Write-Host "RDP USERNAME:"
-          Write-Host "Gamer"
-
-          Write-Host ""
-          Write-Host "RDP PASSWORD:"
-          Write-Host "Gaming@12345"
-
-          Write-Host ""
-          Write-Host "TAILSCALE STATUS:"
-          & "C:\Program Files\Tailscale\tailscale.exe" status
-
-          Write-Host ""
-          Write-Host "TAILSCALE IP:"
-          & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "        CONNECT USING RDP APP"
-          Write-Host "======================================"
-
-      # ==========================================
-      # 10. KEEP RUNNER ALIVE
-      # ==========================================
-      - name: Keep RDP Alive
-        shell: powershell
-        run: |
-          Write-Host "RDP is running..."
-          Write-Host "Keeping the gaming RDP alive."
-
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
+          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
+            Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
             Start-Sleep -Seconds 300
-
-            Write-Host ""
-            Write-Host "[$(Get-Date)] RDP still running..."
-
-            & "C:\Program Files\Tailscale\tailscale.exe" status
           }
